@@ -1,128 +1,142 @@
+"""
+Reddit AI News Fetcher
+
+This script fetches recent posts from specified subreddits related to AI and large language models.
+It uses the PRAW (Python Reddit API Wrapper) to interact with Reddit's API.
+
+Usage:
+    python reddit_ai_fetcher.py
+
+Dependencies:
+    - praw
+    - python-dotenv
+
+Author: Jean-Marc Beaujour (Improved by Assistant)
+Date: July 21, 2024
+Version: 2.0
+License: MIT
+"""
+
 import os
-import praw
+from typing import List, Dict, Any
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from datetime import datetime, timezone
+import praw
 
 
+# Load environment variables
 load_dotenv()
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
-REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
 
 
-class LLM_News_From_Reddit:
-    """
-    A class to fetch today's posts from specified subreddits related to large language models (LLMs).
-    """
+@dataclass
+class RedditPost:
+    title: str
+    link: str
+    author: str
+    score: int
+    date: str
+    content: str
+    num_comments: int
+    subreddit: str
+    is_self: bool
 
-    def __init__(self, subreddits, client_id="", client_secret="", user_agent=""):
-        """
-        Initialize the LLM_News_From_Reddit instance with Reddit API credentials.
-        
-        Args:
-            subredits (list)
-            client_id (str): Reddit client ID.
-            client_secret (str): Reddit client secret.
-            user_agent (str): Reddit user agent.
-        """
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.user_agent = user_agent
-        # List of subreddits to fetch posts from
-        self.subreddits = subreddits
 
-    def init_reddit_client(self,):
-        """
-        Initialize and return a Reddit client instance.
-        
-        Returns:
-            praw.Reddit: Reddit client instance.
-        """
-        return praw.Reddit(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            user_agent=self.user_agent
+class RedditAPIClient:
+    def __init__(self, client_id: str, client_secret: str, user_agent: str):
+        self.reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=user_agent
         )
 
-    @staticmethod
-    def is_today(timestamp):
-        """
-        Check if the given timestamp is from today.
-        
-        Args:
-            timestamp (int): Unix timestamp.
-        
-        Returns:
-            bool: True if the timestamp is from today, False otherwise.
-        """
-        post_date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        today = datetime.now(timezone.utc)
-        return post_date.date() == today.date()
+    def fetch_posts(self, subreddit_name: str, time_window: List[str]) -> List[Dict[str, Any]]:
+        subreddit = self.reddit.subreddit(subreddit_name)
+        recent_posts = []
 
-
-    def fetch_today_posts(self, reddit, subreddit_name):
-        """
-        Fetch today's posts from a specific subreddit.
-        
-        Args:
-            reddit (praw.Reddit): Reddit client instance.
-            subreddit_name (str): Name of the subreddit.
-        
-        Returns:
-            list: List of dictionaries containing post details.
-        """
-        subreddit = reddit.subreddit(subreddit_name)
-        today_posts = []
-        print(subreddit)
         for post in subreddit.new(limit=None):
-            if self.is_today(post.created_utc):
-                today_posts.append({
+            post_date = datetime.fromtimestamp(post.created_utc).strftime('%Y-%m-%d')
+            link = f"https://www.reddit.com{post.permalink}"
+            if post_date in time_window:
+                recent_posts.append({
                     'title': post.title,
-                    'url': f"https://www.reddit.com{post.permalink}",
+                    'link': link,
                     'author': post.author.name if post.author else '[deleted]',
                     'score': post.score,
-                    'num_comments': post.num_comments
+                    'date': post_date,
+                    'content': post.selftext if post.is_self else link,
+                    'num_comments': post.num_comments,
+                    'subreddit': subreddit_name,
+                    'is_self': post.is_self
                 })
-            else:
-                # If we've reached posts from yesterday, stop fetching
-                break
+            elif post_date < min(time_window):
+                break  # Stop if we've reached posts older than our time window
 
-        return today_posts
+        return recent_posts
 
-    def __call__(self,):
-        """
-        Fetch today's posts from all specified subreddits and return a list of post details.
-        
-        Returns:
-            list: List of dictionaries containing post details from all subreddits.
-        """
-        reddit = self.init_reddit_client()
-        all_posts = {}
+class PostProcessor:
+    @staticmethod
+    def process_post(post: Dict[str, Any]) -> RedditPost:
+        return RedditPost(
+            title=post['title'],
+            link=post['link'],
+            author=post['author'],
+            score=post['score'],
+            date=post['date'],
+            num_comments=post['num_comments'],
+            subreddit=post['subreddit'],
+            content=post['content'],
+            is_self=post['is_self']
+        )
+
+class RedditNewsFetcher:
+    def __init__(self, subreddits: List[str], client_id: str, client_secret: str, user_agent: str, days_back: int = 1):
+        self.api_client = RedditAPIClient(client_id, client_secret, user_agent)
+        self.subreddits = subreddits
+        self.days_back = days_back
+        self.time_window = self.generate_time_window()
+
+    def generate_time_window(self) -> List[str]:
+        today = datetime.now().date()
+        return [(today - timedelta(days=x)).strftime("%Y-%m-%d") for x in range(self.days_back)]
+
+    def fetch_posts(self) -> List[RedditPost]:
+        all_posts = []
 
         for subreddit in self.subreddits:
-            #print(f"Fetching posts from r/{subreddit}...")
-            all_posts[subreddit] = self.fetch_today_posts(reddit, subreddit)
-            #print(f"Found {len(all_posts[subreddit])} posts in r/{subreddit}")
+            print(f"Fetching posts from r/{subreddit}")
+            raw_posts = self.api_client.fetch_posts(subreddit, self.time_window)
+            processed_posts = [PostProcessor.process_post(post) for post in raw_posts]
+            all_posts.extend(processed_posts)
 
-        # Generate a simple report
-        # print("\nToday's AI-related posts:")
-        reddit_posts = []
-        for subreddit, posts in all_posts.items():
-            for post in posts:
-                reddit_posts.append({"title": post['title'],
-                                     "subreddit": subreddit,
-                                     "score": post['score'],
-                                     "num_comments": post['num_comments'],
-                                     "link": post["url"]})
+        return sorted(all_posts, key=lambda x: x.date, reverse=True)
 
-        print("Reddit posts ", reddit_posts)
-        return reddit_posts
+def main(subreddits = ['LocalLLaMA', 'GPT3', 'MachineLearning', 'MistralAI', 'OpenAI'], days_back=1):
+    client_id = os.getenv("REDDIT_CLIENT_ID")
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+    user_agent = os.getenv("REDDIT_USER_AGENT")
+
+    if not all([client_id, client_secret, user_agent]):
+        raise ValueError("Reddit API credentials not found in environment variables")
+
+    fetcher = RedditNewsFetcher(subreddits, client_id, client_secret, user_agent, days_back)
+    posts = fetcher.fetch_posts()
+
+    print(f"\nTotal posts found: {len(posts)}")
+    for post in posts:
+        print(f"title: {post.title}")
+        print(f"subreddit: r/{post.subreddit}")
+        print(f"author: u/{post.author}")
+        print(f"score: {post.score}")
+        print(f"comments: {post.num_comments}")
+        print(f"date: {post.date}")
+        print(f"link: {post.link}")
+        if post.is_self:
+            print(f"Content: {post.content}")
+        print("---")
+
+    return posts
 
 
 if __name__ == "__main__":
-
-    subreddits = ['LocalLLaMA', 'GPT3', 'MachineLearning', 'MistralAI', 'OpenAI']
-    rnews = LLM_News_From_Reddit(subreddits, REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT)
-    posts = rnews()
-    
-    print(posts)
+    main()

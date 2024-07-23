@@ -1,130 +1,161 @@
+"""
+YouTube AI News Fetcher
+
+This script fetches YouTube videos related to large language models and AI tools.
+It uses the YouTube Data API to search for videos and retrieve their details.
+
+Usage:
+    python youtube_ai_fetcher.py
+
+Dependencies:
+    - google-api-python-client
+    - python-dotenv
+
+Author: Jean-Marc Beaujour (Improved by Assistant)
+Date: July 21, 2024
+Version: 2.0
+License: MIT
+"""
+
 import os
-from dotenv import load_dotenv
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from youtube_transcript_api import YouTubeTranscriptApi
+from pytube import YouTube
 
 
-
+# Load environment variables
 load_dotenv()
-API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 
-class LLM_News_From_Youtube:
-    """
-    A class to fetch YouTube videos related to large language models and AI tools.
+@dataclass
+class Video:
+    title: str
+    video_id: str
+    published_at: str
+    topic: str
+    link: str
+    channel: str
+    date: str
+    description: str
+    transcript: str
 
-    Attributes:
-        api_key (str): YouTube API key for authentication.
-        search_terms (list): List of search terms to query on YouTube.
 
-    Methods:
-        get_authenticated_service(): Returns an authenticated YouTube service object.
-        iso_format_today(): Returns the current date in ISO format.
-        search_videos(youtube, query, published_after): Searches for videos on YouTube based on the query and date.
-        __call__(): Fetches and returns a list of unique videos for the given search terms.
-    """
-    def __init__(self, search_terms, api_key):
-        """
-        Initializes the LLM_News_From_Youtube class with the provided API key.
-        """
-        self.api_key = api_key
-        self.search_terms = search_terms
+class YouTubeAPIClient:
+    def __init__(self, api_key: str):
+        self.youtube = build('youtube', 'v3', developerKey=api_key)
 
-    def get_authenticated_service(self,):
-        """
-        Authenticates and returns the YouTube service object.
-
-        Returns:
-            youtube: Authenticated YouTube service object.
-        """
-        return build('youtube', 'v3', developerKey=self.api_key)
-
-    @staticmethod
-    def iso_format_today():
-        """
-        Returns the current date in ISO 8601 format.
-
-        Returns:
-            str: Current date in ISO 8601 format.
-        """
-        return datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
-
-    @staticmethod
-    def search_videos(youtube, query, published_after):
-        """
-        Searches for videos on YouTube based on the query and published date.
-
-        Args:
-            youtube: Authenticated YouTube service object.
-            query (str): Search query string.
-            published_after (str): Date in ISO 8601 format to filter videos.
-
-        Returns:
-            list: List of dictionaries containing video details.
-        """
+    def search_videos(self, query: str, published_after: str, max_results: int = 50) -> List[Dict]:
         try:
-            search_response = youtube.search().list(
+            search_response = self.youtube.search().list(
                 q=query,
                 type='video',
                 part='id,snippet',
-                maxResults=50,
+                maxResults=max_results,
                 publishedAfter=published_after,
                 relevanceLanguage='en',
                 order='date'
             ).execute()
 
-            videos = [
-                {
-                    'title': item['snippet']['title'],
-                    'video_id': item['id']['videoId'],
-                    'published_at': item['snippet']['publishedAt'],
-                    'channel_title': item['snippet']['channelTitle'],
-                    'topic': query
-                }
-                for item in search_response.get('items', [])
-            ]
-
-            return videos
-
+            return search_response.get('items', [])
         except HttpError as e:
             print(f'An HTTP error {e.resp.status} occurred:\n{e.content}')
             return []
 
-    def __call__(self,):
-        """
-        Fetches and returns a list of unique videos for the given search terms.
 
-        Returns:
-            list: List of dictionaries containing unique video details.
-        """
-        youtube = self.get_authenticated_service()
-        published_after = self.iso_format_today()
+class VideoProcessor:
+    def __init__(self):
+        pass
+    
+    def process_video(self, video_item: Dict, query: str) -> Video:
+        snippet = video_item['snippet']
+        video_id = video_item['id']['videoId']
+        link = f"https://www.youtube.com/watch?v={video_id}"
 
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            transcript = self.process_raw_transcript(transcript)
+        except:
+            transcript = ""
+
+        video = YouTube(link)
+        description = video.description
+
+        return Video(
+            title=snippet['title'],
+            video_id=video_id,
+            published_at=snippet['publishedAt'],
+            topic=query,
+            link=link,
+            channel=snippet['channelTitle'],
+            date=snippet['publishedAt'],
+            description=description,
+            transcript=transcript
+        )
+    
+    @staticmethod
+    def process_raw_transcript(raw_transcript):
+        transcript_txt = ""
+        for segment in raw_transcript:
+            transcript_txt = transcript_txt +" "+ segment["text"]
+
+        return transcript_txt
+    
+
+class YouTubeNewsFetcher:
+    def __init__(self, api_key: str, search_terms: List[str], days_back: int = 1):
+        self.api_client = YouTubeAPIClient(api_key)
+        self.search_terms = search_terms
+        self.days_back = days_back
+
+    def get_published_after_date(self) -> str:
+        date = datetime.utcnow() - timedelta(days=self.days_back)
+        return date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
+
+    def fetch_videos(self) -> List[Video]:
+        published_after = self.get_published_after_date()
+        video_processor = VideoProcessor()
         all_videos = []
 
         for term in self.search_terms:
-            #print(f"Searching for videos about '{term}'...")
-            videos = self.search_videos(youtube, term, published_after)
+            video_items = self.api_client.search_videos(term, published_after)
+            videos = [video_processor.process_video(video_item=item, query=term) for item in video_items]
             all_videos.extend(videos)
 
-        # Remove duplicates and sort videos by published date
-        unique_videos = list({v['video_id']:v for v in all_videos}.values())
-        unique_videos.sort(key=lambda x: x['published_at'], reverse=True)
+        return self.remove_duplicates(all_videos)
 
-        for ix, video in enumerate(unique_videos):
-            video["link"] = f"https://www.youtube.com/watch?v={video['video_id']}"
-            video["channel"] = video['channel_title']
-            video["date"] = video['published_at']
-            video["topic"] = video["topic"]
-            unique_videos[ix] = video
-
-        print(f"\nTotal unique videos found: {len(unique_videos)}")
-
-        return unique_videos
+    @staticmethod
+    def remove_duplicates(videos: List[Video]) -> List[Video]:
+        unique_videos = {v.video_id: v for v in videos}.values()
+        return sorted(unique_videos, key=lambda x: x.published_at, reverse=True)
 
 
-if __name__ == '__main__':
-    topics = ['large language models', 'LLM', 'AI tools', 'LLM tutorials']
-    youtube_news = LLM_News_From_Youtube(topics, API_KEY)
-    youtube_news()
+def main(topics = ['large language models', 'LLM', 'AI tools', 'LLM tutorials'],
+         days_back=1):
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    if not api_key:
+        raise ValueError("YouTube API key not found in environment variables")
+
+    fetcher = YouTubeNewsFetcher(api_key, topics, days_back)
+    videos = fetcher.fetch_videos()
+
+    print(f"\nTotal unique videos found: {len(videos)}")
+    for video in videos:
+        print(f"Title: {video.title}")
+        print(f"Channel: {video.channel}")
+        print(f"Topic: {video.topic}")
+        print(f"Link: {video.link}")
+        print(f"Published at: {video.published_at}")
+        print(f"Description: {video.description}")
+        print(f"Transcript: {video.transcript}")
+        print("---")
+
+    return videos
+
+
+if __name__ == "__main__":
+    main()
