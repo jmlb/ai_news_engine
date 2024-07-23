@@ -11,7 +11,7 @@ Dependencies:
     - google-api-python-client
     - python-dotenv
 
-Author: Jean-Marc Beaujour (Improved by Assistant)
+Author: Jean-Marc Beaujour
 Date: July 21, 2024
 Version: 2.0
 License: MIT

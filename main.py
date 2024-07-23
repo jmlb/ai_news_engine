@@ -18,7 +18,7 @@ Dependencies:
     - pandas
     - sqlite3
 
-Author: Jean-Marc Beaujour (Improved by Assistant)
+Author: Jean-Marc Beaujour
 Date: 2024-07-21
 Version: 2.1
 License: MIT
